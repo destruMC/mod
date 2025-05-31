@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "destru",
+  "version": "${version}",
+  "name": "destru",
+  "description": "The destru mod.",
+  "authors": [
+    "557"
+  ],
+  "contact": {
+    "homepage": "https://destru.org",
+    "repo": "https://github.com/destruMC/mod",
+    "issues": "https://github.com/destruMC/mod/issues"
+  },
+  "license": "MIT",
+  "icon": "icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "org.destru.fabric.Destru"
+    ],
+    "modmenu": [
+      "org.destru.fabric.ext.ModMenu"
+    ]
+  },
+  "mixins": [
+    "destru.mixins.json"
+  ],
+  "accessWidener": "destru.accesswidener",
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric": "*",
+    "minecraft": ">=${minecraft_version}"
+  },
+  "suggests": {
+    "modmenu": "*",
+    "cloth-config": "*"
+  }
+}
