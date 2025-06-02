@@ -5,13 +5,11 @@ import net.fabricmc.fabric.impl.command.client.ClientCommandInternals;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.phys.BlockHitResult;
 import org.destru.fabric.Config;
-import org.destru.fabric.Destru;
 import org.destru.fabric.event.InputCallback;
 
 import java.util.Objects;
 
 import static org.destru.fabric.Destru.ACTIVE;
-import static org.destru.fabric.Destru.API;
 
 public class InputListener implements InputCallback.AllowInput {
     @Override

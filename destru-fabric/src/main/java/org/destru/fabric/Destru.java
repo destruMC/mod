@@ -5,16 +5,14 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
-import net.fabricmc.fabric.impl.command.client.ClientCommandInternals;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
-import net.minecraft.nbt.Tag;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.level.biome.Biome;
-import net.minecraft.world.level.block.state.BlockState;
 import org.destru.DestruAPI;
 import org.destru.Region;
 import org.destru.Section;
@@ -27,6 +25,7 @@ import org.destru.fabric.listener.RenderListener;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import oshi.util.tuples.Pair;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -34,7 +33,7 @@ import java.util.List;
 
 public class Destru implements ClientModInitializer {
     public static final Logger LOGGER = LoggerFactory.getLogger("destru");
-    public static DestruAPI<BlockPos, Section<BlockPos>, List<Region<BlockPos, List<Tag>, List<Holder<Biome>>>>> API;
+    public static DestruAPI<BlockPos, Section<BlockPos>, List<Region<BlockPos, List<Pair<CompoundTag, Holder<Biome>>>>>> API;
     public static boolean ACTIVE;
     public static boolean CONFIG;
 
@@ -54,9 +53,7 @@ public class Destru implements ClientModInitializer {
         var config = dir.resolve("config.properties");
         Config.load(config);
 
-        ClientLifecycleEvents.CLIENT_STOPPING.register(mc -> {
-            Config.save(config);
-        });
+        ClientLifecycleEvents.CLIENT_STOPPING.register(mc -> Config.save(config));
         InputCallback.EVENT.register(new InputListener());
         WorldRenderEvents.AFTER_ENTITIES.register(new RenderListener());
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {

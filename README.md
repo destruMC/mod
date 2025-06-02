@@ -11,6 +11,18 @@ A lightweight client-side mod that allows you to **save** and **load** regions o
 - Simple commands for ease of use
 - Support on server (only save)
 
+## ✊ Supports
+
+Support for saving and loading content.
+
+|        | Save | Load |
+|--------|------|------|
+| Block  | ✅    | ✅    |
+| Biome  | ✅    | 🚫*  |
+| Entity | ❌    | ❌    |
+
+**Loading biome is not planned due to game limitations.*
+
 ## ❓ Q&A
 
 ### 🧩 How does region placement work?

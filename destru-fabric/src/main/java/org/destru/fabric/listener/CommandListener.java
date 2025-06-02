@@ -18,7 +18,9 @@ import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.commands.arguments.coordinates.Coordinates;
 import net.minecraft.commands.arguments.coordinates.LocalCoordinates;
 import net.minecraft.commands.arguments.coordinates.WorldCoordinates;
-import net.minecraft.core.*;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
+import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.*;
@@ -41,10 +43,12 @@ import org.destru.fabric.ext.ClothConfig;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import oshi.util.tuples.Pair;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
@@ -180,6 +184,9 @@ public class CommandListener implements ClientCommandRegistrationCallback {
             if (optional.isPresent()) {
                 var regions = optional.get();
                 var palette = nbt.getListOrEmpty("palette");
+
+                var biomeRegistry = registryAccess(context.getSource().getWorld()).lookup(Registries.BIOME);
+
                 for (var r : regions) {
                     if (r instanceof CompoundTag region) {
                         int[] size = region.getIntArray("size").orElse(null);
@@ -197,33 +204,38 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                         }
 
                         int[] blocks = region.getIntArray("blocks").orElse(null);
-                        var blocksList = new ArrayList<Tag>();
-                        if (Objects.nonNull(blocks)) {
-                            if (blocks.length != s) {
-                                continue;
-                            }
-                            for (int index : blocks) {
-                                blocksList.add(index == -1 ? null : palette.get(index));
-                            }
+                        if (Objects.nonNull(blocks) && blocks.length != s) {
+                            continue;
+                        }
+                        int[] biomes = region.getIntArray("biomes").orElse(null);
+                        if (Objects.nonNull(biomes) && biomes.length != s) {
+                            continue;
                         }
 
-                        int[] biomes = region.getIntArray("biomes").orElse(null);
-                        var biomesList = new ArrayList<Holder<Biome>>();
-                        if (Objects.nonNull(biomes)) {
-                            if (biomes.length != s) {
-                                continue;
-                            }
-                            for (int index : biomes) {
-                                var tag = palette.get(index);
-                                if (tag instanceof CompoundTag compoundTag) {
-                                    biomesList.add(compoundTag.getString("id").flatMap(id -> context.getSource().registryAccess().lookup(Registries.BIOME).flatMap(registry -> registry.get(ResourceLocation.tryParse(id)))).orElse(null));
+                        var pairs = new ArrayList<Pair<CompoundTag, Holder<Biome>>>();
+                        for (int i = 0; i < s; i++) {
+                            CompoundTag block = null;
+                            Holder<Biome> biome = null;
+
+                            if (Objects.nonNull(blocks)) {
+                                int index = blocks[i];
+                                if (index != -1 && palette.get(index) instanceof CompoundTag tag) {
+                                    block = tag;
                                 }
                             }
+
+                            if (Objects.nonNull(biomes)) {
+                                int index = biomes[i];
+                                if (index != -1 && palette.get(index) instanceof CompoundTag tag) {
+                                    biome = tag.getString("id").flatMap(id -> biomeRegistry.flatMap(registry -> registry.get(ResourceLocation.tryParse(id)))).orElse(null);
+                                }
+                            }
+
+                            pairs.add(new Pair<>(block, biome));
                         }
 
-
                         var pos1 = new BlockPos(pos[0], pos[1], pos[2]);
-                        Destru.API.clipboard().add(new Region<>(new Section<>(pos1, pos1.offset(size[0] - 1, size[1] - 1, size[2] - 1)), blocksList, biomesList));
+                        Destru.API.clipboard().add(new Region<>(new Section<>(pos1, pos1.offset(size[0] - 1, size[1] - 1, size[2] - 1)), pairs));
 
                         count++;
                     }
@@ -241,42 +253,42 @@ public class CommandListener implements ClientCommandRegistrationCallback {
     private static int clipboard$paste(@NotNull CommandContext<FabricClientCommandSource> context, @NotNull Coordinates coordinates) {
         Destru.sendFeedback(Component.translatable("destru.commands.clipboard.paste.started"));
         var pos = coordinates2BlockPos(coordinates, context.getSource());
-        var world = finalWorld(context.getSource().getWorld());
-        var registryAccess = registryAccess(world);
+        var level = finalLevel(context.getSource().getWorld());
+        var registryAccess = registryAccess(level);
         var blockRegistry = registryAccess.lookup(Registries.BLOCK).orElse(BuiltInRegistries.BLOCK);
         int count = 0;
         for (var region : Destru.API.clipboard()) {
             var section = region.section();
-            for (int i = 0; i < region.blocks().size(); i++) {
-                if (region.blocks().get(i) instanceof CompoundTag nbt) {
-                    int index = i;
-                    nbt.getString("id").flatMap(id -> blockRegistry.get(ResourceLocation.tryParse(id))).ifPresent(block -> {
-                        final BlockState[] blockState = {block.value().defaultBlockState()};
+            var pairs = region.blocks();
+            for (int i = 0; i < pairs.size(); i++) {
+                var pair = pairs.get(i);
+                BlockPos.betweenClosedStream(section.pos1(), section.pos2()).skip(i).findFirst().ifPresent(blockPos -> {
+                    var finalPos = blockPos.offset(pos);
 
-                        if (nbt.get("properties") instanceof CompoundTag properties) {
-                            properties.forEach((key, value) -> {
-                                for (var property : blockState[0].getProperties()) {
+                    if (pair.getA() instanceof CompoundTag blockNbt) {
+                        blockNbt.getString("id").flatMap(id -> blockRegistry.get(ResourceLocation.tryParse(id))).ifPresent(block -> {
+                            blockNbt.getCompound("properties").ifPresent(properties -> properties.forEach((key, value) -> {
+                                var blockState = block.value().defaultBlockState();
+                                for (var property : blockState.getProperties()) {
                                     if (property.getName().equals(key)) {
-                                        value.asString().ifPresent(s -> blockState[0] = setValue(blockState[0], property, s));
+                                        value.asString().ifPresent(s -> level.setBlock(finalPos, setValue(blockState, property, s), Block.UPDATE_CLIENTS | Block.UPDATE_SKIP_ON_PLACE, 0));
                                         break;
                                     }
                                 }
-                            });
-                        }
+                            }));
 
-                        BlockPos.betweenClosedStream(section.pos1(), section.pos2()).skip(index).findFirst().ifPresent(blockPos -> {
-                            var offset = blockPos.offset(pos);
-                            world.setBlock(offset, blockState[0], Block.UPDATE_CLIENTS | Block.UPDATE_SKIP_ON_PLACE, 0);
-
-                            if (nbt.get("components") instanceof CompoundTag components) {
-                                var blockEntity = world.getChunkAt(offset).getBlockEntity(offset);
+                            blockNbt.getCompound("components").ifPresent(components -> {
+                                var blockEntity = level.getChunkAt(finalPos).getBlockEntity(finalPos);
                                 if (Objects.nonNull(blockEntity)) {
                                     blockEntity.loadCustomOnly(components, registryAccess);
                                 }
-                            }
+                            });
                         });
-                    });
-                }
+                    }
+//                    if (pair.getB() instanceof Holder<Biome> biome) {
+//
+//                    }
+                });
             }
             count++;
         }
@@ -327,42 +339,43 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                 nbt.put("pos", new IntArrayTag(new int[] {box.minX() - pos.getX(), box.minY() - pos.getY(), box.minZ() - pos.getZ()}));
                 nbt.put("size", new IntArrayTag(new int[] {box.getXSpan(), box.getYSpan(), box.getZSpan()}));
 
-                var regionBlocks = region.blocks();
-                int[] blocks = new int[regionBlocks.size()];
-                for (int i = 0; i < regionBlocks.size(); i++) {
-                    var block = regionBlocks.get(i);
-                    int index;
-                    if (Objects.nonNull(block)) {
+                var pairs = region.blocks();
+                int size = pairs.size();
+                int[] blocks = new int[size];
+                int[] biomes = new int[size];
+                for (int i = 0; i < size; i++) {
+                    var pair = pairs.get(i);
+
+                    var block = pair.getA();
+                    if (Objects.isNull(block)) {
+                        blocks[i] = -1;
+                    } else {
                         if (palette.contains(block)) {
-                            index = palette.indexOf(block);
+                            blocks[i] = palette.indexOf(block);
                         } else {
                             palette.add(block);
-                            index = palette.size() - 1;
+                            blocks[i] = palette.size() - 1;
                         }
-                    } else {
-                        index = -1;
                     }
 
-                    blocks[i] = index;
-                }
-                nbt.put("blocks", new IntArrayTag(blocks));
-
-                var regionBiomes = region.biomes();
-                if (!regionBiomes.isEmpty()) {
-                    int[] biomes = new int[regionBiomes.size()];
-                    for (int i = 0; i < regionBiomes.size(); i++) {
-                        var biome = regionBiomes.get(i);
+                    var biome = pair.getB();
+                    if (Objects.isNull(biome)) {
+                        biomes[i] = -1;
+                    } else {
                         var biomeNbt = new CompoundTag();
                         biomeNbt.putString("id", biome.getRegisteredName());
-                        int index;
                         if (palette.contains(biomeNbt)) {
-                            index = palette.indexOf(biomeNbt);
+                            biomes[i] = palette.indexOf(biomeNbt);
                         } else {
                             palette.add(biomeNbt);
-                            index = palette.size() - 1;
+                            biomes[i] = palette.size() - 1;
                         }
-                        biomes[i] = index;
                     }
+                }
+                if (!Arrays.stream(blocks).allMatch(i -> i == -1)) {
+                    nbt.put("blocks", new IntArrayTag(blocks));
+                }
+                if (!Arrays.stream(biomes).allMatch(i -> i == -1)) {
                     nbt.put("biomes", new IntArrayTag(biomes));
                 }
 
@@ -469,16 +482,15 @@ public class CommandListener implements ClientCommandRegistrationCallback {
             return 0;
         }
 
-        var world = finalWorld(context.getSource().getWorld());
-        var registryAccess = registryAccess(world);
+        var level = finalLevel(context.getSource().getWorld());
+        var registryAccess = registryAccess(level);
         var blockRegistry = registryAccess.lookup(Registries.BLOCK).orElse(BuiltInRegistries.BLOCK);
 
-        var blocks = new ArrayList<Tag>();
-        var biomes = new ArrayList<Holder<Biome>>();
+        var blocks = new ArrayList<Pair<CompoundTag, Holder<Biome>>>();
         Destru.sendFeedback(Component.translatable("destru.commands.push.started"));
         BlockPos.betweenClosedStream(BoundingBox.fromCorners(pos1, pos2)).forEach(pos -> {
             CompoundTag nbt = null;
-            var blockState = world.getBlockState(pos);
+            var blockState = level.getBlockState(pos);
             var block = blockState.getBlock();
 
             var id = blockRegistry.getKey(block);
@@ -493,7 +505,7 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                 }
 
                 var components = new CompoundTag();
-                var blockEntity = world.getChunkAt(pos).getBlockEntity(pos);
+                var blockEntity = level.getChunkAt(pos).getBlockEntity(pos);
                 if (Objects.nonNull(blockEntity)) {
                     blockEntity.saveAdditional(components, registryAccess);
                 }
@@ -502,12 +514,9 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                 }
             }
 
-            blocks.add(nbt);
-            if (biome) {
-                biomes.add(world.getBiome(pos));
-            }
+            blocks.add(new Pair<>(nbt, biome ? level.getBiome(pos) : null));
         });
-        Destru.API.regions().add(new Region<>(section, blocks, biomes));
+        Destru.API.regions().add(new Region<>(section, blocks));
         Destru.sendFeedback(Component.translatable("destru.commands.push.success", Component.literal(String.valueOf(blocks.size())).withStyle(ChatFormatting.AQUA)));
         return 1;
     }
@@ -541,19 +550,19 @@ public class CommandListener implements ClientCommandRegistrationCallback {
         return component.withStyle(component.getStyle().withUnderlined(true).withClickEvent(new ClickEvent.OpenFile(path.toAbsolutePath())));
     }
 
-    private static @NotNull Level finalWorld(ClientLevel clientWorld) {
+    private static @NotNull Level finalLevel(ClientLevel clientLevel) {
         var server = Minecraft.getInstance().getSingleplayerServer();
         if (Objects.nonNull(server)) {
-            var serverWorld = server.getLevel(clientWorld.dimension());
-            if (Objects.nonNull(serverWorld)) {
-                return serverWorld;
+            var serverLevel = server.getLevel(clientLevel.dimension());
+            if (Objects.nonNull(serverLevel)) {
+                return serverLevel;
             }
         }
-        return clientWorld;
+        return clientLevel;
     }
 
-    private static @NotNull RegistryAccess registryAccess(@NotNull Level world) {
-        return world.registryAccess();
+    private static @NotNull RegistryAccess registryAccess(@NotNull Level level) {
+        return level.registryAccess();
     }
 
     private static <T extends Comparable<T>> @Nullable BlockState setValue(BlockState block, @NotNull Property<T> property, String string) {
