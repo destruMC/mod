@@ -2,6 +2,8 @@
 
 A lightweight client-side mod that allows you to **save** and **load** regions of the Minecraft world.
 
+> ❗ The mod is still in the development stage, now only available basically, API has not been fully designed.
+
 ## ✨ Features
 
 - Save any selected region(s) to a file
@@ -23,7 +25,7 @@ Support for saving and loading content.
 
 **Loading biome is not very precise due to game limitations.*
 
-## ❓ Q&A
+## ❓ FAQ
 
 ### 🧩 How does region placement work?
 
