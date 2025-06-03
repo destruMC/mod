@@ -6,3 +6,5 @@ accessible field net/minecraft/commands/arguments/coordinates/LocalCoordinates f
 accessible field net/minecraft/commands/arguments/coordinates/LocalCoordinates up D
 accessible field net/minecraft/commands/arguments/coordinates/LocalCoordinates left D
 accessible method net/minecraft/world/level/block/entity/BlockEntity saveAdditional (Lnet/minecraft/nbt/CompoundTag;Lnet/minecraft/core/HolderLookup$Provider;)V
+accessible field net/minecraft/world/level/biome/BiomeManager biomeZoomSeed J
+accessible method net/minecraft/world/level/biome/BiomeManager getFiddledDistance (JIIIDDD)D

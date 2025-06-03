@@ -18,10 +18,10 @@ Support for saving and loading content.
 |        | Save | Load |
 |--------|------|------|
 | Block  | ✅    | ✅    |
-| Biome  | ✅    | 🚫*  |
+| Biome  | ✅    | ✅*   |
 | Entity | ❌    | ❌    |
 
-**Loading biome is not planned due to game limitations.*
+**Loading biome is not very precise due to game limitations.*
 
 ## ❓ Q&A
 

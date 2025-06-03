@@ -18,21 +18,24 @@ import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.commands.arguments.coordinates.Coordinates;
 import net.minecraft.commands.arguments.coordinates.LocalCoordinates;
 import net.minecraft.commands.arguments.coordinates.WorldCoordinates;
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.Holder;
-import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.*;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.*;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundChunksBiomesPacket;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.BiomeManager;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
+import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.PalettedContainer;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.phys.Vec3;
 import org.destru.Region;
@@ -47,9 +50,7 @@ import oshi.util.tuples.Pair;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
 import static com.mojang.brigadier.arguments.BoolArgumentType.bool;
@@ -185,8 +186,6 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                 var regions = optional.get();
                 var palette = nbt.getListOrEmpty("palette");
 
-                var biomeRegistry = registryAccess(context.getSource().getWorld()).lookup(Registries.BIOME);
-
                 for (var r : regions) {
                     if (r instanceof CompoundTag region) {
                         int[] size = region.getIntArray("size").orElse(null);
@@ -212,10 +211,10 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                             continue;
                         }
 
-                        var pairs = new ArrayList<Pair<CompoundTag, Holder<Biome>>>();
+                        var pairs = new ArrayList<Pair<CompoundTag, ResourceLocation>>();
                         for (int i = 0; i < s; i++) {
                             CompoundTag block = null;
-                            Holder<Biome> biome = null;
+                            ResourceLocation biome = null;
 
                             if (Objects.nonNull(blocks)) {
                                 int index = blocks[i];
@@ -227,7 +226,10 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                             if (Objects.nonNull(biomes)) {
                                 int index = biomes[i];
                                 if (index != -1 && palette.get(index) instanceof CompoundTag tag) {
-                                    biome = tag.getString("id").flatMap(id -> biomeRegistry.flatMap(registry -> registry.get(ResourceLocation.tryParse(id)))).orElse(null);
+                                    var id = tag.getString("id");
+                                    if (id.isPresent()) {
+                                        biome = ResourceLocation.tryParse(id.get());
+                                    }
                                 }
                             }
 
@@ -256,6 +258,7 @@ public class CommandListener implements ClientCommandRegistrationCallback {
         var level = finalLevel(context.getSource().getWorld());
         var registryAccess = registryAccess(level);
         var blockRegistry = registryAccess.lookup(Registries.BLOCK).orElse(BuiltInRegistries.BLOCK);
+        var biomeRegistry = registryAccess.lookup(Registries.BIOME);
         int count = 0;
         for (var region : Destru.API.clipboard()) {
             var section = region.section();
@@ -285,9 +288,22 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                             });
                         });
                     }
-//                    if (pair.getB() instanceof Holder<Biome> biome) {
-//
-//                    }
+                    if (pair.getB() instanceof ResourceLocation location) {
+                        biomeRegistry.flatMap(registry -> registry.get(location)).ifPresent(biome -> {
+                            var chunk = level.getChunkAt(finalPos);
+                            int[] biomePos = biomePos(level.getBiomeManager(), chunk, finalPos);
+                            var chunkSection = chunk.getSection(biomePos[0]);
+                            if (chunkSection.getBiomes() instanceof PalettedContainer<Holder<Biome>> biomes) {
+                                biomes.set(biomePos[1], biomePos[2], biomePos[3], biome);
+                                chunk.markUnsaved();
+                                if (level instanceof ServerLevel serverLevel) {
+                                    serverLevel.getChunkSource().chunkMap.resendBiomesForChunks(List.of(chunk));
+                                } else {
+                                    context.getSource().getPlayer().connection.handleChunksBiomes(ClientboundChunksBiomesPacket.forChunks(List.of(chunk)));
+                                }
+                            }
+                        });
+                    }
                 });
             }
             count++;
@@ -363,7 +379,7 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                         biomes[i] = -1;
                     } else {
                         var biomeNbt = new CompoundTag();
-                        biomeNbt.putString("id", biome.getRegisteredName());
+                        biomeNbt.putString("id", biome.toString());
                         if (palette.contains(biomeNbt)) {
                             biomes[i] = palette.indexOf(biomeNbt);
                         } else {
@@ -486,7 +502,7 @@ public class CommandListener implements ClientCommandRegistrationCallback {
         var registryAccess = registryAccess(level);
         var blockRegistry = registryAccess.lookup(Registries.BLOCK).orElse(BuiltInRegistries.BLOCK);
 
-        var blocks = new ArrayList<Pair<CompoundTag, Holder<Biome>>>();
+        var blocks = new ArrayList<Pair<CompoundTag, ResourceLocation>>();
         Destru.sendFeedback(Component.translatable("destru.commands.push.started"));
         BlockPos.betweenClosedStream(BoundingBox.fromCorners(pos1, pos2)).forEach(pos -> {
             CompoundTag nbt = null;
@@ -514,7 +530,7 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                 }
             }
 
-            blocks.add(new Pair<>(nbt, biome ? level.getBiome(pos) : null));
+            blocks.add(new Pair<>(nbt, biome ? level.getBiome(pos).unwrapKey().flatMap(key -> Optional.of(key.location())).orElse(null) : null));
         });
         Destru.API.regions().add(new Region<>(section, blocks));
         Destru.sendFeedback(Component.translatable("destru.commands.push.success", Component.literal(String.valueOf(blocks.size())).withStyle(ChatFormatting.AQUA)));
@@ -567,6 +583,49 @@ public class CommandListener implements ClientCommandRegistrationCallback {
 
     private static <T extends Comparable<T>> @Nullable BlockState setValue(BlockState block, @NotNull Property<T> property, String string) {
         return property.getValue(string).map(t -> block.trySetValue(property, t)).orElse(block);
+    }
+
+    @Contract("_, _, _ -> new")
+    private static int @NotNull [] biomePos(@NotNull BiomeManager biomeManager, @NotNull ChunkAccess chunk, @NotNull BlockPos blockPos) {
+        int i = blockPos.getX() - 2;
+        int j = blockPos.getY() - 2;
+        int k = blockPos.getZ() - 2;
+        int l = i >> 2;
+        int m = j >> 2;
+        int n = k >> 2;
+        double d = (double)(i & 3) / (double)4.0F;
+        double e = (double)(j & 3) / (double)4.0F;
+        double f = (double)(k & 3) / (double)4.0F;
+        int o = 0;
+        double g = Double.POSITIVE_INFINITY;
+
+        for(int p = 0; p < 8; ++p) {
+            boolean bl = (p & 4) == 0;
+            boolean bl2 = (p & 2) == 0;
+            boolean bl3 = (p & 1) == 0;
+            int q = bl ? l : l + 1;
+            int r = bl2 ? m : m + 1;
+            int s = bl3 ? n : n + 1;
+            double h = bl ? d : d - (double)1.0F;
+            double t = bl2 ? e : e - (double)1.0F;
+            double u = bl3 ? f : f - (double)1.0F;
+            double v = BiomeManager.getFiddledDistance(biomeManager.biomeZoomSeed, q, r, s, h, t, u);
+            if (g > v) {
+                o = p;
+                g = v;
+            }
+        }
+
+        int p = (o & 4) == 0 ? l : l + 1;
+        int w = (o & 2) == 0 ? m : m + 1;
+        int x = (o & 1) == 0 ? n : n + 1;
+
+        int a = QuartPos.fromBlock(chunk.getMinY());
+        int b = a + QuartPos.fromBlock(chunk.getHeight()) - 1;
+        int c = Mth.clamp(w, a, b);
+        int z = chunk.getSectionIndex(QuartPos.toBlock(c));
+
+        return new int[]{z, p & 3, c & 3, x & 3};
     }
 
     static class PathArgumentType implements ArgumentType<Path> {

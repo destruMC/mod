@@ -9,10 +9,9 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Holder;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
-import net.minecraft.world.level.biome.Biome;
+import net.minecraft.resources.ResourceLocation;
 import org.destru.DestruAPI;
 import org.destru.Region;
 import org.destru.Section;
@@ -33,7 +32,7 @@ import java.util.List;
 
 public class Destru implements ClientModInitializer {
     public static final Logger LOGGER = LoggerFactory.getLogger("destru");
-    public static DestruAPI<BlockPos, Section<BlockPos>, List<Region<BlockPos, List<Pair<CompoundTag, Holder<Biome>>>>>> API;
+    public static DestruAPI<BlockPos, Section<BlockPos>, List<Region<BlockPos, List<Pair<CompoundTag, ResourceLocation>>>>> API;
     public static boolean ACTIVE;
     public static boolean CONFIG;
 
