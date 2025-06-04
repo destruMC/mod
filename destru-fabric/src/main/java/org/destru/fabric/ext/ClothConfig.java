@@ -83,6 +83,29 @@ public class ClothConfig {
                 .addEntry(activeCategory.setExpanded(true).build())
                 .addEntry(pos1Category.setExpanded(true).build())
                 .addEntry(pos2Category.setExpanded(true).build());
+
+        var pushCategory = entry.startSubCategory(Component.translatable("destru.option.flags.push"));
+        pushCategory.add(entry.startBooleanToggle(Component.translatable("destru.option.flags.biome"), Config.FLAGS_PUSH_BIOME.getValue())
+                .setDefaultValue(Config.FLAGS_PUSH_BIOME.getDefaultValue())
+                .setSaveConsumer(Config.FLAGS_PUSH_BIOME::setValue)
+                .build());
+        pushCategory.add(entry.startBooleanToggle(Component.translatable("destru.option.flags.entity"), Config.FLAGS_PUSH_ENTITY.getValue())
+                .setDefaultValue(Config.FLAGS_PUSH_ENTITY.getDefaultValue())
+                .setSaveConsumer(Config.FLAGS_PUSH_ENTITY::setValue)
+                .build());
+        var loadCategory = entry.startSubCategory(Component.translatable("destru.option.flags.load"));
+        loadCategory.add(entry.startBooleanToggle(Component.translatable("destru.option.flags.biome"), Config.FLAGS_LOAD_BIOME.getValue())
+                .setDefaultValue(Config.FLAGS_LOAD_BIOME.getDefaultValue())
+                .setSaveConsumer(Config.FLAGS_LOAD_BIOME::setValue)
+                .build());
+        loadCategory.add(entry.startBooleanToggle(Component.translatable("destru.option.flags.entity"), Config.FLAGS_LOAD_ENTITY.getValue())
+                .setDefaultValue(Config.FLAGS_LOAD_ENTITY.getDefaultValue())
+                .setSaveConsumer(Config.FLAGS_LOAD_ENTITY::setValue)
+                .build());
+        builder.getOrCreateCategory(Component.translatable("destru.category.flags"))
+                .addEntry(pushCategory.setExpanded(true).build())
+                .addEntry(loadCategory.setExpanded(true).build());
+
         return builder.build();
     }
 }

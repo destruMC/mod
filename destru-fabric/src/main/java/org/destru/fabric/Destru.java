@@ -12,10 +12,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
-import org.destru.DestruAPI;
-import org.destru.Region;
-import org.destru.Section;
-import org.destru.SimpleDestruAPI;
+import org.destru.*;
 import org.destru.fabric.event.InputCallback;
 import org.destru.fabric.ext.ClothConfig;
 import org.destru.fabric.listener.CommandListener;
@@ -32,7 +29,7 @@ import java.util.List;
 
 public class Destru implements ClientModInitializer {
     public static final Logger LOGGER = LoggerFactory.getLogger("destru");
-    public static DestruAPI<BlockPos, Section<BlockPos>, List<Region<BlockPos, List<Pair<CompoundTag, ResourceLocation>>>>> API;
+    public static DestruAPI<BlockPos, Section<BlockPos>, List<Region<BlockPos, List<Pair<CompoundTag, ResourceLocation>>>>, List<CompoundTag>, Clipboard<BlockPos, List<Pair<CompoundTag, ResourceLocation>>, CompoundTag>> API;
     public static boolean ACTIVE;
     public static boolean CONFIG;
 

@@ -3,16 +3,18 @@ package org.destru;
 import java.util.ArrayList;
 import java.util.List;
 
-public class SimpleDestruAPI<Pos, Blocks> implements DestruAPI<Pos, Section<Pos>, List<Region<Pos, Blocks>>> {
+public class SimpleDestruAPI<Pos, Blocks, Entity> implements DestruAPI<Pos, Section<Pos>, List<Region<Pos, Blocks>>, List<Entity>, Clipboard<Pos, Blocks, Entity>> {
     private Pos pos;
     private Section<Pos> section;
     private final List<Region<Pos, Blocks>> regions;
-    private final List<Region<Pos, Blocks>> clipboard;
+    private final List<Entity> entities;
+    private final Clipboard<Pos, Blocks, Entity> clipboard;
 
     public SimpleDestruAPI() {
         this.section = new Section<>(null, null);
         this.regions = new ArrayList<>();
-        this.clipboard = new ArrayList<>();
+        this.entities = new ArrayList<>();
+        this.clipboard = new Clipboard<>(new ArrayList<>(), new ArrayList<>());
     }
 
     @Override
@@ -36,7 +38,12 @@ public class SimpleDestruAPI<Pos, Blocks> implements DestruAPI<Pos, Section<Pos>
     }
 
     @Override
-    public List<Region<Pos, Blocks>> clipboard() {
+    public List<Entity> entities() {
+        return entities;
+    }
+
+    @Override
+    public Clipboard<Pos, Blocks, Entity> clipboard() {
         return clipboard;
     }
 

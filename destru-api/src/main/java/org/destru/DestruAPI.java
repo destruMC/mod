@@ -1,6 +1,6 @@
 package org.destru;
 
-public interface DestruAPI<Pos, Section, Regions> {
+public interface DestruAPI<Pos, Section, Regions, Entities, Clipboard> {
     Pos pos();
 
     void pos(Pos pos);
@@ -9,19 +9,21 @@ public interface DestruAPI<Pos, Section, Regions> {
 
     Regions regions();
 
-    Regions clipboard();
+    Entities entities();
+
+    Clipboard clipboard();
 
     void section(Section section);
 
     class Provider {
-        private static DestruAPI<?, ?, ?> API;
+        private static DestruAPI<?, ?, ?, ?, ?> API;
 
         @SuppressWarnings("unchecked")
-        public static <Pos, Section, Regions> DestruAPI<Pos, Section, Regions> get() {
-            return (DestruAPI<Pos, Section, Regions>) API;
+        public static <Pos, Section, Regions, Entities, Clipboard> DestruAPI<Pos, Section, Regions, Entities, Clipboard> get() {
+            return (DestruAPI<Pos, Section, Regions, Entities, Clipboard>) API;
         }
 
-        public static <Pos, Section, Regions> void set(DestruAPI<Pos, Section, Regions> API) {
+        public static <Pos, Section, Regions, Entities, Clipboard> void set(DestruAPI<Pos, Section, Regions, Entities, Clipboard> API) {
             Provider.API = API;
         }
     }

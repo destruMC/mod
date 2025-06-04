@@ -7,18 +7,21 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.ChatFormatting;
 import net.minecraft.Util;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.commands.arguments.coordinates.Coordinates;
 import net.minecraft.commands.arguments.coordinates.LocalCoordinates;
 import net.minecraft.commands.arguments.coordinates.WorldCoordinates;
-import net.minecraft.core.*;
+import net.minecraft.commands.arguments.selector.EntitySelector;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
+import net.minecraft.core.QuartPos;
+import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.*;
@@ -27,7 +30,12 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundChunksBiomesPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.AbortableIterationConsumer;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntitySpawnReason;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeManager;
@@ -37,6 +45,7 @@ import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.PalettedContainer;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.destru.Region;
 import org.destru.Section;
@@ -57,6 +66,7 @@ import static com.mojang.brigadier.arguments.BoolArgumentType.bool;
 import static com.mojang.brigadier.arguments.StringArgumentType.string;
 import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.argument;
 import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.literal;
+import static net.minecraft.commands.arguments.EntityArgument.entities;
 import static net.minecraft.commands.arguments.coordinates.BlockPosArgument.blockPos;
 import static org.destru.fabric.listener.CommandListener.PathArgumentType.path;
 
@@ -78,7 +88,7 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                         )
                         .then(literal("load")
                                 .then(argument("path", path(dir))
-                                        .executes(context -> clipboard$load(context, context.getArgument("path", Path.class)))
+                                        .executes(context -> clipboard$load(context.getArgument("path", Path.class)))
                                 )
                         )
                         .then(literal("paste")
@@ -145,7 +155,7 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                         )
                 )
                 .then(literal("structures")
-                        .executes(context -> structures())
+                        .executes(this::structures)
                 )
                 .then(literal("new")
                         .then(argument("pos", blockPos())
@@ -153,10 +163,17 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                         )
                 )
                 .then(literal("push")
-                        .executes(context -> push(context, false))
+                        .executes(context -> push(context, Config.FLAGS_PUSH_BIOME.getValue(), Config.FLAGS_PUSH_ENTITY.getValue()))
                         .then(argument("biome", bool())
-                                .executes(context -> push(context, context.getArgument("biome", Boolean.class)))
-
+                                .executes(context -> push(context, context.getArgument("biome", Boolean.class), Config.FLAGS_PUSH_ENTITY.getValue()))
+                                .then(argument("entity", bool())
+                                        .executes(context -> push(context, context.getArgument("biome", Boolean.class), context.getArgument("entity", Boolean.class)))
+                                )
+                        )
+                        .then(literal("entities")
+                                .then(argument("selector", entities())
+                                        .executes(context -> push(context, context.getArgument("selector", EntitySelector.class)))
+                                )
                         )
                 );
 
@@ -169,82 +186,86 @@ public class CommandListener implements ClientCommandRegistrationCallback {
         dispatcher.register(root);
     }
 
-    private int clipboard$clear() {
-        Destru.API.clipboard().clear();
+    private static int clipboard$clear() {
+        Destru.API.clipboard().blocks().clear();
+        Destru.API.clipboard().entities().clear();
         Destru.sendFeedback(Component.translatable("destru.commands.clipboard.clear"));
         return 0;
     }
 
-    private int clipboard$load(@NotNull CommandContext<FabricClientCommandSource> context, @NotNull Path path) {
+    private static int clipboard$load(@NotNull Path path) {
         try {
             Destru.sendFeedback(Component.translatable("destru.commands.clipboard.load.started"));
             var nbt = NbtIo.readCompressed(path, NbtAccounter.unlimitedHeap());
 
-            int count = 0;
-            var optional = nbt.getList("regions");
-            if (optional.isPresent()) {
-                var regions = optional.get();
-                var palette = nbt.getListOrEmpty("palette");
-
-                for (var r : regions) {
-                    if (r instanceof CompoundTag region) {
-                        int[] size = region.getIntArray("size").orElse(null);
-                        if (Objects.isNull(size) || size.length != 3) {
-                            continue;
-                        }
-                        int[] pos = region.getIntArray("pos").orElse(null);
-                        if (Objects.isNull(pos) || pos.length != 3) {
-                            continue;
-                        }
-
-                        int s = size[0] * size[1] * size[2];
-                        if (s == 0) {
-                            continue;
-                        }
-
-                        int[] blocks = region.getIntArray("blocks").orElse(null);
-                        if (Objects.nonNull(blocks) && blocks.length != s) {
-                            continue;
-                        }
-                        int[] biomes = region.getIntArray("biomes").orElse(null);
-                        if (Objects.nonNull(biomes) && biomes.length != s) {
-                            continue;
-                        }
-
-                        var pairs = new ArrayList<Pair<CompoundTag, ResourceLocation>>();
-                        for (int i = 0; i < s; i++) {
-                            CompoundTag block = null;
-                            ResourceLocation biome = null;
-
-                            if (Objects.nonNull(blocks)) {
-                                int index = blocks[i];
-                                if (index != -1 && palette.get(index) instanceof CompoundTag tag) {
-                                    block = tag;
-                                }
-                            }
-
-                            if (Objects.nonNull(biomes)) {
-                                int index = biomes[i];
-                                if (index != -1 && palette.get(index) instanceof CompoundTag tag) {
-                                    var id = tag.getString("id");
-                                    if (id.isPresent()) {
-                                        biome = ResourceLocation.tryParse(id.get());
-                                    }
-                                }
-                            }
-
-                            pairs.add(new Pair<>(block, biome));
-                        }
-
-                        var pos1 = new BlockPos(pos[0], pos[1], pos[2]);
-                        Destru.API.clipboard().add(new Region<>(new Section<>(pos1, pos1.offset(size[0] - 1, size[1] - 1, size[2] - 1)), pairs));
-
-                        count++;
+            int regions = 0;
+            var palette = nbt.getListOrEmpty("palette");
+            for (var r : nbt.getListOrEmpty("regions")) {
+                if (r instanceof CompoundTag region) {
+                    int[] size = region.getIntArray("size").orElse(null);
+                    if (Objects.isNull(size) || size.length != 3) {
+                        continue;
                     }
+                    int[] pos = region.getIntArray("pos").orElse(null);
+                    if (Objects.isNull(pos) || pos.length != 3) {
+                        continue;
+                    }
+
+                    int s = size[0] * size[1] * size[2];
+                    if (s == 0) {
+                        continue;
+                    }
+
+                    int[] blocks = region.getIntArray("blocks").orElse(null);
+                    if (Objects.nonNull(blocks) && blocks.length != s) {
+                        continue;
+                    }
+                    int[] biomes = region.getIntArray("biomes").orElse(null);
+                    if (Objects.nonNull(biomes) && biomes.length != s) {
+                        continue;
+                    }
+
+                    var pairs = new ArrayList<Pair<CompoundTag, ResourceLocation>>();
+                    for (int i = 0; i < s; i++) {
+                        CompoundTag block = null;
+                        ResourceLocation biome = null;
+
+                        if (Objects.nonNull(blocks)) {
+                            int index = blocks[i];
+                            if (index != -1 && palette.get(index) instanceof CompoundTag tag) {
+                                block = tag;
+                            }
+                        }
+
+                        if (Objects.nonNull(biomes)) {
+                            int index = biomes[i];
+                            if (index != -1 && palette.get(index) instanceof CompoundTag tag) {
+                                var id = tag.getString("id");
+                                if (id.isPresent()) {
+                                    biome = ResourceLocation.tryParse(id.get());
+                                }
+                            }
+                        }
+
+                        pairs.add(new Pair<>(block, biome));
+                    }
+
+                    var pos1 = new BlockPos(pos[0], pos[1], pos[2]);
+                    Destru.API.clipboard().blocks().add(new Region<>(new Section<>(pos1, pos1.offset(size[0] - 1, size[1] - 1, size[2] - 1)), pairs));
+
+                    regions++;
                 }
             }
 
-            Destru.sendFeedback(Component.translatable("destru.commands.clipboard.load.success", Component.literal(String.valueOf(count)).withStyle(ChatFormatting.AQUA)));
+            int entities = 0;
+            for (var e : nbt.getListOrEmpty("entities")) {
+                if (e instanceof CompoundTag entity) {
+                    Destru.API.clipboard().entities().add(entity);
+                    entities++;
+                }
+            }
+
+            Destru.sendFeedback(Component.translatable("destru.commands.clipboard.load.success", Component.literal(String.valueOf(regions)).withStyle(ChatFormatting.AQUA), Component.literal(String.valueOf(entities)).withStyle(ChatFormatting.AQUA)));
         } catch (Exception e) {
             Destru.sendError(Component.translatable("destru.commands.clipboard.load.failed", e.getLocalizedMessage()));
             Destru.LOGGER.error("Failed to load structure", e);
@@ -255,12 +276,14 @@ public class CommandListener implements ClientCommandRegistrationCallback {
     private static int clipboard$paste(@NotNull CommandContext<FabricClientCommandSource> context, @NotNull Coordinates coordinates) {
         Destru.sendFeedback(Component.translatable("destru.commands.clipboard.paste.started"));
         var pos = coordinates2BlockPos(coordinates, context.getSource());
-        var level = finalLevel(context.getSource().getWorld());
+        var level = level(context);
         var registryAccess = registryAccess(level);
+
         var blockRegistry = registryAccess.lookup(Registries.BLOCK).orElse(BuiltInRegistries.BLOCK);
         var biomeRegistry = registryAccess.lookup(Registries.BIOME);
-        int count = 0;
-        for (var region : Destru.API.clipboard()) {
+
+        int blocks = 0;
+        for (var region : Destru.API.clipboard().blocks()) {
             var section = region.section();
             var pairs = region.blocks();
             for (int i = 0; i < pairs.size(); i++) {
@@ -270,15 +293,18 @@ public class CommandListener implements ClientCommandRegistrationCallback {
 
                     if (pair.getA() instanceof CompoundTag blockNbt) {
                         blockNbt.getString("id").flatMap(id -> blockRegistry.get(ResourceLocation.tryParse(id))).ifPresent(block -> {
+                            final BlockState[] blockState = {block.value().defaultBlockState()};
+
                             blockNbt.getCompound("properties").ifPresent(properties -> properties.forEach((key, value) -> {
-                                var blockState = block.value().defaultBlockState();
-                                for (var property : blockState.getProperties()) {
+                                for (var property : blockState[0].getProperties()) {
                                     if (property.getName().equals(key)) {
-                                        value.asString().ifPresent(s -> level.setBlock(finalPos, setValue(blockState, property, s), Block.UPDATE_CLIENTS | Block.UPDATE_SKIP_ON_PLACE, 0));
+                                        value.asString().ifPresent(s -> blockState[0] = setValue(blockState[0], property, s));
                                         break;
                                     }
                                 }
                             }));
+
+                            level.setBlock(finalPos, blockState[0], Block.UPDATE_CLIENTS | Block.UPDATE_SKIP_ON_PLACE, 0);
 
                             blockNbt.getCompound("components").ifPresent(components -> {
                                 var blockEntity = level.getChunkAt(finalPos).getBlockEntity(finalPos);
@@ -306,9 +332,32 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                     }
                 });
             }
-            count++;
+            blocks++;
         }
-        Destru.sendFeedback(Component.translatable("destru.commands.clipboard.paste.success", Component.literal(String.valueOf(count)).withStyle(ChatFormatting.AQUA)));
+
+        int entities = 0;
+        for (var entity : Destru.API.clipboard().entities()) {
+            var copied = entity.copy();
+            var entityPos = new ArrayList<Double>();
+            var list = copied.getListOrEmpty("Pos");
+            for (var nbt : list) {
+                nbt.asDouble().ifPresent(entityPos::add);
+            }
+            if (entityPos.size() == 3) {
+                list.clear();
+                list.add(DoubleTag.valueOf(pos.getX() + entityPos.get(0)));
+                list.add(DoubleTag.valueOf(pos.getY() + entityPos.get(1)));
+                list.add(DoubleTag.valueOf(pos.getZ() + entityPos.get(2)));
+                var e = EntityType.create(copied, level, EntitySpawnReason.LOAD);
+                if (e.isPresent()) {
+                    if (level.addFreshEntity(e.get())) {
+                        entities++;
+                    }
+                }
+            }
+        }
+
+        Destru.sendFeedback(Component.translatable("destru.commands.clipboard.paste.success", Component.literal(String.valueOf(blocks)).withStyle(ChatFormatting.AQUA), Component.literal(String.valueOf(entities)).withStyle(ChatFormatting.AQUA)));
         return 0;
     }
 
@@ -327,14 +376,14 @@ public class CommandListener implements ClientCommandRegistrationCallback {
     private int save(@NotNull String name) {
         var pos = Destru.API.pos();
         if (Objects.isNull(pos)) {
-            Destru.sendError(Component.translatable("destru.commands.save.failed"));
+            Destru.sendError(Component.translatable("destru.commands.save.failed.new"));
             return 0;
         }
         try {
             name = name + ".destru";
             var path = dir.resolve(name);
             if (Files.exists(path)) {
-                Destru.sendError(Component.translatable("destru.commands.save.exists", pathComponent(name, path)));
+                Destru.sendError(Component.translatable("destru.commands.save.failed.exists", pathComponent(name, path)));
                 return 0;
             }
 
@@ -405,12 +454,18 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                 root.put("regions", regions);
             }
 
+            var entities = new ListTag();
+            entities.addAll(Destru.API.entities());
+            if (!entities.isEmpty()) {
+                root.put("entities", entities);
+            }
+
             NbtIo.writeCompressed(root, path);
 
             Destru.sendFeedback(Component.translatable("destru.commands.save.success", pathComponent(name, path)));
             return 1;
         } catch (Exception e) {
-            Destru.sendError(Component.translatable("destru.commands.structures", e.getLocalizedMessage()));
+            Destru.sendError(Component.translatable("destru.commands.save.failed.unknown", e.getLocalizedMessage()));
             Destru.LOGGER.error("Failed to save structure", e);
         }
         return 0;
@@ -467,15 +522,16 @@ public class CommandListener implements ClientCommandRegistrationCallback {
         return 0;
     }
 
-    private int structures() {
+    private int structures(@NotNull CommandContext<FabricClientCommandSource> context) {
         try {
             if (!Files.exists(dir)) {
                 Files.createDirectories(dir);
             }
             Util.getPlatform().openPath(dir);
+            Destru.sendFeedback(Component.translatable("destru.commands.structures.success", pathComponent(context.getSource().getClient().gameDirectory.toPath().relativize(dir).toString(), dir)));
             return 1;
         } catch (Exception e) {
-            Destru.sendError(Component.translatable("destru.commands.save.exception", e.getLocalizedMessage()));
+            Destru.sendError(Component.translatable("destru.commands.structures.failed", e.getLocalizedMessage()));
             Destru.LOGGER.error("Failed to open structures directory", e);
         }
         return 0;
@@ -489,24 +545,33 @@ public class CommandListener implements ClientCommandRegistrationCallback {
         return 0;
     }
 
-    private static int push(@NotNull CommandContext<FabricClientCommandSource> context, boolean biome) {
+    private static int push(@NotNull CommandContext<FabricClientCommandSource> context, boolean biome, boolean entity) {
+        var pos = Destru.API.pos();
+        if (Objects.isNull(pos)) {
+            Destru.sendError(Component.translatable("destru.commands.push.failed.new"));
+            return 0;
+        }
+
         var section = Destru.API.section();
         var pos1 = section.pos1();
         var pos2 = section.pos2();
         if (Objects.isNull(pos1) || Objects.isNull(pos2)) {
-            Destru.sendError(Component.translatable("destru.commands.push.failed"));
+            Destru.sendError(Component.translatable("destru.commands.push.failed.section"));
             return 0;
         }
 
-        var level = finalLevel(context.getSource().getWorld());
+        Destru.sendFeedback(Component.translatable("destru.commands.push.started"));
+
+        var level = level(context);
         var registryAccess = registryAccess(level);
         var blockRegistry = registryAccess.lookup(Registries.BLOCK).orElse(BuiltInRegistries.BLOCK);
 
+        var box = BoundingBox.fromCorners(pos1, pos2);
+
         var blocks = new ArrayList<Pair<CompoundTag, ResourceLocation>>();
-        Destru.sendFeedback(Component.translatable("destru.commands.push.started"));
-        BlockPos.betweenClosedStream(BoundingBox.fromCorners(pos1, pos2)).forEach(pos -> {
+        BlockPos.betweenClosedStream(box).forEach(blockPos -> {
             CompoundTag nbt = null;
-            var blockState = level.getBlockState(pos);
+            var blockState = level.getBlockState(blockPos);
             var block = blockState.getBlock();
 
             var id = blockRegistry.getKey(block);
@@ -521,7 +586,7 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                 }
 
                 var components = new CompoundTag();
-                var blockEntity = level.getChunkAt(pos).getBlockEntity(pos);
+                var blockEntity = level.getChunkAt(blockPos).getBlockEntity(blockPos);
                 if (Objects.nonNull(blockEntity)) {
                     blockEntity.saveAdditional(components, registryAccess);
                 }
@@ -530,10 +595,55 @@ public class CommandListener implements ClientCommandRegistrationCallback {
                 }
             }
 
-            blocks.add(new Pair<>(nbt, biome ? level.getBiome(pos).unwrapKey().flatMap(key -> Optional.of(key.location())).orElse(null) : null));
+            blocks.add(new Pair<>(nbt, biome ? level.getBiome(blockPos).unwrapKey().flatMap(key -> Optional.of(key.location())).orElse(null) : null));
         });
+
+        var entities = new ArrayList<CompoundTag>();
+        if (entity) {
+            level.getEntities().get(AABB.of(box), e -> {
+                if (!e.isPassenger()) {
+                    var nbt = new CompoundTag();
+                    if (e.saveAsPassenger(nbt)) {
+                        nbt.remove("Pos");
+                        nbt.store("Pos", Vec3.CODEC, e.position().subtract(pos.getX(), pos.getY(), pos.getZ()));
+                        nbt.remove("UUID");
+                        entities.add(nbt);
+                    }
+                }
+            });
+        }
+
         Destru.API.regions().add(new Region<>(section, blocks));
-        Destru.sendFeedback(Component.translatable("destru.commands.push.success", Component.literal(String.valueOf(blocks.size())).withStyle(ChatFormatting.AQUA)));
+        if (entity) {
+            Destru.API.entities().addAll(entities);
+            Destru.sendFeedback(Component.translatable("destru.commands.push.success.all", Component.literal(String.valueOf(blocks.size())).withStyle(ChatFormatting.AQUA), Component.literal(String.valueOf(entities.size())).withStyle(ChatFormatting.AQUA)));
+        } else {
+            Destru.sendFeedback(Component.translatable("destru.commands.push.success.block", Component.literal(String.valueOf(blocks.size())).withStyle(ChatFormatting.AQUA)));
+        }
+        return 1;
+    }
+
+    private static int push(@NotNull CommandContext<FabricClientCommandSource> context, @NotNull EntitySelector selector) {
+        var pos = Destru.API.pos();
+        if (Objects.isNull(pos)) {
+            Destru.sendError(Component.translatable("destru.commands.push.failed.new"));
+            return 0;
+        }
+
+        int count = 0;
+        for (var entity : findEntities(context, selector)) {
+            if (!entity.isPassenger()) {
+                var nbt = new CompoundTag();
+                if (entity.saveAsPassenger(nbt)) {
+                    nbt.remove("Pos");
+                    nbt.store("Pos", Vec3.CODEC, entity.position().subtract(pos.getX(), pos.getY(), pos.getZ()));
+                    nbt.remove("UUID");
+                    Destru.API.entities().add(nbt);
+                    count++;
+                }
+            }
+        }
+        Destru.sendFeedback(Component.translatable("destru.commands.push.success.entity", Component.literal(String.valueOf(count)).withStyle(ChatFormatting.AQUA)));
         return 1;
     }
 
@@ -566,8 +676,9 @@ public class CommandListener implements ClientCommandRegistrationCallback {
         return component.withStyle(component.getStyle().withUnderlined(true).withClickEvent(new ClickEvent.OpenFile(path.toAbsolutePath())));
     }
 
-    private static @NotNull Level finalLevel(ClientLevel clientLevel) {
-        var server = Minecraft.getInstance().getSingleplayerServer();
+    private static @NotNull Level level(@NotNull CommandContext<FabricClientCommandSource> context) {
+        var clientLevel = context.getSource().getWorld();
+        var server = context.getSource().getClient().getSingleplayerServer();
         if (Objects.nonNull(server)) {
             var serverLevel = server.getLevel(clientLevel.dimension());
             if (Objects.nonNull(serverLevel)) {
@@ -581,8 +692,9 @@ public class CommandListener implements ClientCommandRegistrationCallback {
         return level.registryAccess();
     }
 
-    private static <T extends Comparable<T>> @Nullable BlockState setValue(BlockState block, @NotNull Property<T> property, String string) {
-        return property.getValue(string).map(t -> block.trySetValue(property, t)).orElse(block);
+    private static <T extends Comparable<T>> BlockState setValue(@NotNull BlockState block, @NotNull Property<T> property, String value) {
+        value = value.toLowerCase();
+        return property.getValue(value).map(t -> block.trySetValue(property, t)).orElse(block);
     }
 
     @Contract("_, _, _ -> new")
@@ -626,6 +738,175 @@ public class CommandListener implements ClientCommandRegistrationCallback {
         int z = chunk.getSectionIndex(QuartPos.toBlock(c));
 
         return new int[]{z, p & 3, c & 3, x & 3};
+    }
+
+    private static List<Entity> findEntities(@NotNull CommandContext<FabricClientCommandSource> context, @NotNull EntitySelector selector) {
+        var level = level(context);
+
+        if (level instanceof ServerLevel serverLevel) {
+            if (!selector.includesEntities) {
+                if (selector.playerName != null) {
+                    var player = serverLevel.getServer().getPlayerList().getPlayerByName(selector.playerName);
+                    return player == null ? List.of() : List.of(player);
+                }
+                else if (selector.entityUUID != null) {
+                    var player = serverLevel.getServer().getPlayerList().getPlayer(selector.entityUUID);
+                    return player == null ? List.of() : List.of(player);
+                }
+                else {
+                    var vec3 = selector.position.apply(context.getSource().getPosition());
+                    var aabb = selector.getAbsoluteAabb(vec3);
+                    var predicate = selector.getPredicate(vec3, aabb, null);
+                    if (selector.currentEntity) {
+                        if (context.getSource().getEntity() instanceof ServerPlayer player) {
+                            if (predicate.test(player)) {
+                                return List.of(player);
+                            }
+                        }
+                        return List.of();
+                    } else {
+                        int i = selector.getResultLimit();
+                        var list = new ObjectArrayList<Entity>();
+                        if (selector.isWorldLimited()) {
+                            list.addAll(serverLevel.getPlayers(predicate, i));
+                        } else {
+                            for(var player : serverLevel.getServer().getPlayerList().getPlayers()) {
+                                if (predicate.test(player)) {
+                                    list.add(player);
+                                    if (list.size() >= i) {
+                                        return list;
+                                    }
+                                }
+                            }
+                        }
+                        return selector.sortAndLimit(vec3, list);
+                    }
+                }
+            }
+            else if (selector.playerName != null) {
+                var player = serverLevel.getServer().getPlayerList().getPlayerByName(selector.playerName);
+                return player == null ? List.of() : List.of(player);
+            }
+            else if (selector.entityUUID != null) {
+                for(var sl : serverLevel.getServer().getAllLevels()) {
+                    var entity = sl.getEntity(selector.entityUUID);
+                    if (entity != null) {
+                        if (entity.getType().isEnabled(serverLevel.enabledFeatures())) {
+                            return List.of(entity);
+                        }
+                        break;
+                    }
+                }
+                return List.of();
+            }
+            else {
+                var vec3 = selector.position.apply(context.getSource().getPosition());
+                var aabb = selector.getAbsoluteAabb(vec3);
+                if (selector.currentEntity) {
+                    var predicate = selector.getPredicate(vec3, aabb, null);
+                    var entity = context.getSource().getEntity();
+                    return entity != null && predicate.test(entity) ? List.of(entity) : List.of();
+                } else {
+                    var predicate = selector.getPredicate(vec3, aabb, serverLevel.enabledFeatures());
+                    var list = new ObjectArrayList<Entity>();
+                    if (selector.isWorldLimited()) {
+                        selector.addEntities(list, serverLevel, aabb, predicate);
+                    } else {
+                        for(ServerLevel sl : serverLevel.getServer().getAllLevels()) {
+                            selector.addEntities(list, sl, aabb, predicate);
+                        }
+                    }
+                    return selector.sortAndLimit(vec3, list);
+                }
+            }
+        }
+        else {
+            if (!selector.includesEntities) {
+                if (selector.playerName != null) {
+                    for (var player : level.players()) {
+                        if (player.getScoreboardName().equals(selector.playerName)) {
+                            return List.of(player);
+                        }
+                    }
+                    return List.of();
+                }
+                else if (selector.entityUUID != null) {
+                    var player = level.getPlayerByUUID(selector.entityUUID);
+                    return player == null ? List.of() : List.of(player);
+                }
+                else {
+                    var vec3 = selector.position.apply(context.getSource().getPosition());
+                    var aabb = selector.getAbsoluteAabb(vec3);
+                    var predicate = selector.getPredicate(vec3, aabb, null);
+                    if (selector.currentEntity) {
+                        if (context.getSource().getEntity() instanceof ServerPlayer player) {
+                            if (predicate.test(player)) {
+                                return List.of(player);
+                            }
+                        }
+                        return List.of();
+                    } else {
+                        int i = selector.getResultLimit();
+                        var list = new ObjectArrayList<Entity>();
+                        for (var player : level.players()) {
+                            if (predicate.test(player)) {
+                                list.add(player);
+                                if (list.size() >= i) {
+                                    return list;
+                                }
+                            }
+                        }
+                        return selector.sortAndLimit(vec3, list);
+                    }
+                }
+            }
+            else if (selector.playerName != null) {
+                for (var player : level.players()) {
+                    if (player.getScoreboardName().equals(selector.playerName)) {
+                        return List.of(player);
+                    }
+                }
+                return List.of();
+            }
+            else if (selector.entityUUID != null) {
+                var entity = level.getEntity(selector.entityUUID);
+                if (entity != null) {
+                    if (entity.getType().isEnabled(level.enabledFeatures())) {
+                        return List.of(entity);
+                    }
+                }
+                return List.of();
+            }
+            else {
+                var vec3 = selector.position.apply(context.getSource().getPosition());
+                var aabb = selector.getAbsoluteAabb(vec3);
+                if (selector.currentEntity) {
+                    var predicate = selector.getPredicate(vec3, aabb, null);
+                    var entity = context.getSource().getEntity();
+                    return entity != null && predicate.test(entity) ? List.of(entity) : List.of();
+                } else {
+                    var predicate = selector.getPredicate(vec3, aabb, level.enabledFeatures());
+                    var list = new ObjectArrayList<Entity>();
+                    int i = selector.getResultLimit();
+                    if (list.size() < i) {
+                        if (aabb != null) {
+                            level.getEntities(selector.type, aabb, predicate, list, i);
+                        } else {
+                            level.getEntities().get(selector.type, (entity) -> {
+                                if (predicate.test(entity)) {
+                                    list.add(entity);
+                                    if (list.size() >= i) {
+                                        return AbortableIterationConsumer.Continuation.ABORT;
+                                    }
+                                }
+                                return AbortableIterationConsumer.Continuation.CONTINUE;
+                            });
+                        }
+                    }
+                    return selector.sortAndLimit(vec3, list);
+                }
+            }
+        }
     }
 
     static class PathArgumentType implements ArgumentType<Path> {

@@ -76,8 +76,8 @@ public class RenderListener implements WorldRenderEvents.AfterEntities {
             drawSolidBox(stack, buffer, AABB.of(BoundingBox.fromCorners(section.pos1(), section.pos2())).move(camera), Config.RENDER_REGION_COLOR.getValue());
         }
 
-        var clipboard = Destru.API.clipboard();
-        if (!clipboard.isEmpty()) {
+        var blocks = Destru.API.clipboard().blocks();
+        if (!blocks.isEmpty()) {
             Minecraft mc = Minecraft.getInstance();
             if (mc.hitResult instanceof BlockHitResult blockHitResult) {
                 var pos = blockHitResult.getBlockPos();
@@ -86,7 +86,7 @@ public class RenderListener implements WorldRenderEvents.AfterEntities {
                     var aabb = new AABB(pos);
                     drawSolidBox(stack, buffer, aabb.setMaxY(aabb.minY).move(camera), Config.RENDER_CLIPBOARD_COLOR.getValue());
                     buffer = consumers.getBuffer(LINES);
-                    for (var region : clipboard) {
+                    for (var region : blocks) {
                         var section = region.section();
                         drawOutlinedBox(stack, buffer, AABB.of(BoundingBox.fromCorners(section.pos1(), section.pos2())).move(pos).move(camera), Config.RENDER_CLIPBOARD_COLOR.getValue());
                     }

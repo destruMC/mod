@@ -21,7 +21,7 @@ Support for saving and loading content.
 |--------|------|------|
 | Block  | ✅    | ✅    |
 | Biome  | ✅    | ✅*   |
-| Entity | ❌    | ❌    |
+| Entity | ✅    | ✅    |
 
 **Loading biome is not very precise due to game limitations.*
 
